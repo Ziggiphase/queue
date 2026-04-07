@@ -9,7 +9,8 @@ import io
 import plotly.express as px
 import plotly.graph_objects as go
 
-# --- 1. GLOBAL CONSTANTS & BRANDING (Fixes KeyErrors) ---
+# --- 1. GLOBAL CONSTANTS & BRANDING ---
+# Pre-defined to prevent any KeyError crashes
 NAVY = "#1e3a8a"
 NILE_BLUE = "#3b82f6" 
 GOLD = "#facc15"
@@ -18,7 +19,7 @@ APP_NAME = "Nile Timetable Architect"
 
 st.set_page_config(page_title=APP_NAME, layout="wide", page_icon="🏛️")
 
-# --- 2. DATABASE PERSISTENCE ---
+# --- 2. DATA PERSISTENCE LAYER ---
 def load_db():
     if os.path.exists(DB_FILE):
         try:
@@ -26,7 +27,7 @@ def load_db():
                 return json.load(f)
         except: pass
     
-    # Master Dataset (Provided 42 Courses)
+    # Master Dataset based on your CSV files (42 Courses)
     return [
         {"Code": "COS 101", "Name": "Intro to Computing", "Lecturer": "Ahmed Adeniyi", "Level": "100L-IT", "Credit": 3, "Category": "Core", "Dept": "IT", "Prio": 1},
         {"Code": "GST 111", "Name": "Communication in English", "Lecturer": "GST Dept.", "Level": "100L-IT", "Credit": 2, "Category": "Common", "Dept": "IT", "Prio": 1},
@@ -79,7 +80,7 @@ def save_db(data):
 if 'courses_db' not in st.session_state:
     st.session_state.courses_db = load_db()
 
-# --- 3. UNIVERSITY RESOURCE CONSTRAINTS ---
+# --- 3. INFRASTRUCTURE & ROOMS ---
 ROOMS = {
     "E101 (Congo)": {"cap": 60},
     "E102 (Congo)": {"cap": 60},
@@ -90,56 +91,56 @@ ROOMS = {
     "F206 (Ubangi)": {"cap": 60},
 }
 
-CLASS_POPULATIONS = {
+CLASS_SIZES = {
     "100L-IT": 100, "100L-IS": 100, "200L-IT": 169, "200L-IS": 94,
     "300L-IT": 113, "400L-IT": 71, "PGD-IT": 20, "MSC-IT": 40
 }
 
-DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-
-# --- 4. THE BALANCED QUEUEING ENGINE ---
-class BalancedQueueEngine:
+# --- 4. BALANCED QUEUEING ENGINE ---
+class BalancedTimetableEngine:
     def __init__(self, courses):
-        # Multi-stage sorting for optimal outcome
+        # Priority Logic: Core > Common > Elective
         cat_map = {"Core": 1, "Common": 2, "Elective": 3}
         self.courses = sorted(courses, key=lambda x: (cat_map.get(x['Category'], 4), x['Prio'], -x['Credit']))
         self.schedule = []
-        self.busy = set() # Store as (EntityName, Day, Hour)
+        self.busy = set() # Track (Identifier, Day, Hour)
 
-    def is_free(self, entity, d, h): return (entity, d, h) not in self.busy
+    def is_free(self, identifier, d, h): return (identifier, d, h) not in self.busy
 
     def run(self):
+        days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        
         for course in self.courses:
             placed = False
             duration = int(course['Credit'])
-            target_size = CLASS_POPULATIONS.get(course['Level'], 50)
+            target_size = CLASS_SIZES.get(course['Level'], 50)
             
-            # Day Shuffling Heuristic: Prevents clustering on Monday
-            search_days = DAYS.copy()
-            random.shuffle(search_days)
+            # Balancer: Shuffle days for each course to prevent clustering on Monday
+            check_days = days_of_week.copy()
+            random.shuffle(check_days)
             
-            for d in search_days:
-                # Slot preferences: UG Morning/Afternoon, PG Afternoon/Evening
+            for d in check_days:
+                # UG prefer Morning/Afternoon; PG prefer Afternoon/Evening
                 h_range = range(15, 19-duration+1) if course['Prio'] >= 5 else range(9, 18-duration+1)
                 
                 for start_h in h_range:
                     slots = list(range(start_h, start_h + duration))
                     
                     for r_name, r_meta in ROOMS.items():
-                        # Hard Constraint 1: Capacity
+                        # Constraint Check: Room Size
                         if r_meta['cap'] < target_size: continue
                         
-                        # Hard Constraint 2: Room Specific Window
+                        # Constraint Check: Room Availability Window
                         if "avail" in r_meta:
                             win = r_meta['avail'].get(d)
                             if not win or not (slots[0] >= win[0] and slots[-1] < win[1]): continue
                         
-                        # Hard Constraint 3: Multi-Entity Conflict (Room, Lecturer, and Level Group)
+                        # Constraint Check: Conflict (Room, Lecturer, Class Group)
                         if all(self.is_free(r_name, d, h) for h in slots) and \
                            all(self.is_free(course['Lecturer'], d, h) for h in slots) and \
                            all(self.is_free(course['Level'], d, h) for h in slots):
                             
-                            # Book the block
+                            # Book consecutive block
                             for h in slots:
                                 self.busy.add((r_name, d, h))
                                 self.busy.add((course['Lecturer'], d, h))
@@ -148,117 +149,119 @@ class BalancedQueueEngine:
                             self.schedule.append({
                                 **course, "Day": d, 
                                 "Time": f"{start_h:02d}:00 - {(start_h + duration):02d}:00",
-                                "Room": r_name, "RoomCap": r_meta['cap'], "ActualSize": target_size
+                                "Room": r_name, "RoomCap": r_meta['cap'], "Size": target_size
                             })
                             placed = True; break
                     if placed: break
                 if placed: break
+            
             if not placed:
-                self.schedule.append({**course, "Day": "OVERFLOW", "Time": "N/A", "Room": "N/A", "RoomCap": 0, "ActualSize": target_size})
+                self.schedule.append({**course, "Day": "OVERFLOW", "Time": "N/A", "Room": "N/A", "RoomCap": 0, "Size": target_size})
+        
         return pd.DataFrame(self.schedule)
 
-# --- 5. EXCEL EXPORTERS (Professional Deliverables) ---
-def get_timetable_grid_excel(df):
+# --- 5. PROFESSIONAL EXCEL EXPORTER ---
+def generate_master_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         workbook = writer.book
-        title_fmt = workbook.add_format({'bold': True, 'bg_color': NAVY, 'font_color': 'white', 'border': 1, 'align': 'center'})
+        title_fmt = workbook.add_format({'bold': True, 'bg_color': NAVY, 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
         grid_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True, 'font_size': 9})
-        header_fmt = workbook.add_format({'bold': True, 'bg_color': '#f1f5f9', 'border': 1})
+        header_fmt = workbook.add_format({'bold': True, 'bg_color': '#f1f5f9', 'border': 1, 'align': 'center'})
 
         for lvl in sorted(df['Level'].unique()):
             sub = df[df['Level'] == lvl]
-            sheet = lvl.replace("-", " ")
+            sheet_name = lvl.replace("-", " ")
+            
+            # GRID Construction (Left Side)
             time_labels = [f"{h:02d}:00 - {(h+1):02d}:00" for h in range(9, 18)]
-            grid = pd.DataFrame(index=time_labels, columns=DAYS).fillna("")
+            grid = pd.DataFrame(index=time_labels, columns=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]).fillna("")
             
             for _, row in sub.iterrows():
                 if row['Day'] != "OVERFLOW":
                     s_h = int(row['Time'].split(":")[0])
                     e_h = int(row['Time'].split(" - ")[1].split(":")[0])
                     for h in range(s_h, e_h):
-                        grid.at[f"{h:02d}:00 - {(h+1):02d}:00", row['Day']] = f"{row['Code']}\n{row['Room']}\n{row['Lecturer']}"
+                        label = f"{h:02d}:00 - {(h+1):02d}:00"
+                        grid.at[label, row['Day']] = f"{row['Code']}\n{row['Room']}\n{row['Lecturer']}"
 
-            grid.to_excel(writer, sheet_name=sheet, startrow=3, startcol=0)
-            sub[['Code', 'Name', 'Lecturer', 'Credit', 'Category']].to_excel(writer, sheet_name=sheet, startrow=3, startcol=8, index=False)
+            grid.to_excel(writer, sheet_name=sheet_name, startrow=3, startcol=0)
             
-            ws = writer.sheets[sheet]
+            # ALLOCATION Construction (Right Side)
+            sub[['Code', 'Name', 'Lecturer', 'Credit', 'Category']].to_excel(writer, sheet_name=sheet_name, startrow=3, startcol=8, index=False)
+            
+            # Decoration
+            ws = writer.sheets[sheet_name]
             ws.merge_range('A1:F2', f"NILE UNIVERSITY - {lvl} WEEKLY GRID", title_fmt)
-            ws.merge_range('I1:M2', f"DEPARTMENTAL COURSE ALLOCATION", title_fmt)
+            ws.merge_range('I1:M2', f"COURSE ALLOCATION REPORT", title_fmt)
             ws.set_column('A:A', 15, header_fmt)
             ws.set_column('B:F', 20, grid_fmt)
             ws.set_column('I:M', 20, grid_fmt)
-    return output.getvalue()
-
-def get_allocation_list_excel(df):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df[['Level', 'Code', 'Name', 'Lecturer', 'Credit', 'Category']].to_excel(writer, sheet_name="Master Allocation", index=False)
+            
     return output.getvalue()
 
 # --- 6. UI INTERFACE ---
 st.markdown(f"""
-    <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, {NAVY} 0%, {NILE_BLUE} 100%); border-radius: 15px; color: white; margin-bottom: 30px;">
+    <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, {NAVY} 0%, {NILE_BLUE} 100%); border-radius: 15px; color: white; margin-bottom: 30px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
         <h1 style="margin:0; font-size: 32px;">🏛️ {APP_NAME}</h1>
-        <p style="margin:0; opacity: 0.9;">Professional Unified Simulation & Resource Architect | IT & IS Departments</p>
+        <p style="margin:0; opacity: 0.9; font-weight: 300;">Professional Multi-Server Scheduling System | Faculty of Computing</p>
     </div>
     """, unsafe_allow_html=True)
 
-nav = st.sidebar.radio("Main Menu", ["🛠️ Admin: Course Management", "⚙️ Engine: Simulation Run", "📈 Analytics: Performance"])
+nav = st.sidebar.radio("Navigation Menu", ["Admin: Course Database", "Simulation: Run Engine", "Analytics: Usage Reports"])
 
-if nav == "🛠️ Admin: Course Management":
-    st.header("🛠️ Super Admin Rights: Course Database")
-    st.info("Management page for Course Codes, Lecturers, and Categories. Changes are persistent.")
+if nav == "Admin: Course Database":
+    st.header("🛠️ Super Admin Rights: Database Management")
+    st.info("Modify allocations, change lecturers, or add new courses. These changes persist across browser refreshes.")
     
     col1, col2 = st.columns([1, 4])
-    dept_f = col1.selectbox("Filter View", ["All", "IT", "IS"])
+    dept_f = col1.selectbox("Filter Dept", ["All", "IT", "IS"])
     db_df = pd.DataFrame(st.session_state.courses_db)
     if dept_f != "All": db_df = db_df[db_df['Level'].str.contains(dept_f)]
     
     edited = st.data_editor(db_df, num_rows="dynamic", use_container_width=True)
-    if st.button("💾 Synchronize & Save Changes"):
+    if st.button("💾 Synchronize & Save Database"):
         st.session_state.courses_db = edited.to_dict('records')
         save_db(st.session_state.courses_db)
-        st.success("Database Saved Successfully! Data remains even if you refresh.")
+        st.success("Database Updated Successfully! This is now the source of truth.")
 
-elif nav == "⚙️ Engine: Simulation Run":
+elif nav == "Simulation: Run Engine":
     st.header("⚙️ Queueing Simulation Engine")
-    st.write("Generating a balanced, conflict-free timetable using stochastic Day-Rotation logic.")
+    st.write("Generating a conflict-free timetable using stochastic block-booking logic.")
     
-    if st.button("🚀 EXECUTE GENERATOR"):
+    if st.button("🚀 EXECUTE BALANCED GENERATOR"):
         with st.spinner("Calculating Optimal Resource Distribution..."):
-            eng = BalancedQueueEngine(st.session_state.courses_db)
+            eng = BalancedTimetableEngine(st.session_state.courses_db)
             st.session_state.results = eng.run()
         st.balloons()
     
     if 'results' in st.session_state:
         res = st.session_state.results
-        lv = st.selectbox("Academic Level View", sorted(res['Level'].unique()))
+        lv = st.selectbox("Switch Academic Level View", sorted(res['Level'].unique()))
         st.dataframe(res[res['Level'] == lv], use_container_width=True, hide_index=True)
         
         st.divider()
-        st.subheader("📥 Professional Deliverables")
-        colA, colB = st.columns(2)
-        colA.download_button("📥 Download Weekly Grid Excel", get_timetable_grid_excel(res), f"Nile_Weekly_Grid_{datetime.now().strftime('%Y%m%d')}.xlsx")
-        colB.download_button("📥 Download Allocation Report Excel", get_allocation_list_excel(res), f"Nile_Allocation_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        st.subheader("📥 Master Professional Export")
+        excel_bin = generate_master_excel(res)
+        st.download_button("Download Multi-Sheet Timetable & Allocation (Excel)", excel_bin, f"Nile_FCOM_Timetable_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
-elif nav == "📈 Analytics: Performance":
-    st.header("📈 Efficiency & Infrastructure Reports")
+elif nav == "Analytics: Usage Reports":
+    st.header("📈 Infrastructure & Efficiency Stats")
     if 'results' in st.session_state:
         res_ok = st.session_state.results[st.session_state.results['Day'] != "OVERFLOW"]
         
         st.subheader("Spatial Fitting (Capacity vs. Student Count)")
         fig = go.Figure()
         fig.add_trace(go.Bar(x=res_ok['Code'], y=res_ok['RoomCap'], name='Room Max Capacity', marker_color=NAVY))
-        fig.add_trace(go.Bar(x=res_ok['Code'], y=res_ok['ActualSize'], name='Actual Student Count', marker_color=GOLD))
-        fig.update_layout(barmode='group', title="Aiming for Optimal Room Utilization")
+        fig.add_trace(go.Bar(x=res_ok['Code'], y=res_ok['Size'], name='Actual Student Count', marker_color=GOLD))
+        fig.update_layout(barmode='group', height=500, title="Optimizing Hall Usage Efficiency")
         st.plotly_chart(fig, use_container_width=True)
         
         st.subheader("Lecturer Load Distribution")
-        load = res_ok.groupby('Lecturer')['Credit'].sum().reset_index()
-        st.plotly_chart(px.pie(load, values='Credit', names='Lecturer', hole=0.4), use_container_width=True)
+        workload = res_ok.groupby('Lecturer')['Credit'].sum().reset_index()
+        st.plotly_chart(px.pie(workload, values='Credit', names='Lecturer', hole=0.4), use_container_width=True)
     else:
         st.info("Run the simulation first to view analytics.")
 
 st.divider()
-st.caption(f"FCOM Timetable Project | Nile University Faculty of Computing | Version 6.0")
+st.caption("FCOM Timetable Project | Developed for Nile University | Version 6.0 (Production Edition)")
