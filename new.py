@@ -9,7 +9,7 @@ import io
 import plotly.express as px
 import plotly.graph_objects as go
 
-# --- 1. GLOBAL CONSTANTS & BRANDING ---
+# --- 1. GLOBAL CONSTANTS & BRANDING (Fixed KeyError) ---
 NAVY = "#1e3a8a"
 NILE_BLUE = "#3b82f6" 
 GOLD = "#facc15"
@@ -112,7 +112,7 @@ class BalancedTimetableEngine:
             target_size = CLASS_POPULATIONS.get(course['Level'], 50)
             
             search_days = DAYS.copy()
-            random.shuffle(search_days) # Natural Spread
+            random.shuffle(search_days) # Natural workload spread
             
             for d in search_days:
                 h_range = range(15, 19-duration+1) if course['Prio'] >= 5 else range(9, 18-duration+1)
@@ -130,7 +130,7 @@ class BalancedTimetableEngine:
                             for h in slots:
                                 self.busy.add((r_name, d, h)); self.busy.add((course['Lecturer'], d, h)); self.busy.add((course['Level'], d, h))
                             self.schedule.append({
-                                **course, "Day": d, "Start": start_h, "End": start_h + duration,
+                                **course, "Day": d, "Start": int(start_h), "End": int(start_h + duration),
                                 "Time": f"{start_h:02d}:00 - {(start_h + duration):02d}:00",
                                 "Room": r_name, "RoomCap": r_meta['cap'], "ActualSize": target_size
                             })
@@ -140,7 +140,7 @@ class BalancedTimetableEngine:
             if not placed: self.schedule.append({**course, "Day": "OVERFLOW", "Time": "N/A", "Room": "N/A"})
         return pd.DataFrame(self.schedule)
 
-# --- 5. EXCEL EXPORTER (MERGED CELLS) ---
+# --- 5. EXCEL EXPORTER (MERGED CELLS + SEPARATE FILES) ---
 def get_merged_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -167,18 +167,26 @@ def get_merged_excel(df):
             for _, r in sub.iterrows():
                 if r['Day'] != "OVERFLOW":
                     col = day_to_col[r['Day']]
-                    s_row = r['Start'] - 5
-                    e_row = r['End'] - 6
+                    # Explicit integer conversion to fix Python 3.13 range error
+                    s_row = int(r['Start']) - 5
+                    e_row = int(r['End']) - 6
                     content = f"{r['Code']}\n{r['Room']}\n{r['Lecturer']}"
+                    
                     if s_row == e_row:
                         ws.write(s_row, col, content, cell_fmt)
                     else:
                         ws.merge_range(s_row, col, e_row, col, content, cell_fmt)
 
-            # Allocation Table
+            # Side-by-side Allocation Table
             sub[['Code', 'Name', 'Lecturer', 'Credit', 'Category']].to_excel(writer, sheet_name=sheet, startrow=3, startcol=8, index=False)
             ws.set_column('A:A', 15); ws.set_column('B:F', 20); ws.set_column('I:M', 20)
             
+    return output.getvalue()
+
+def get_allocation_only_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df[['Level', 'Code', 'Name', 'Lecturer', 'Credit', 'Category']].to_excel(writer, sheet_name="Master Allocation", index=False)
     return output.getvalue()
 
 # --- 6. UI ---
@@ -188,30 +196,43 @@ st.markdown(f"""<div style="text-align: center; padding: 20px; background: linea
 nav = st.sidebar.radio("Navigation", ["Admin: Course Management", "Timetable Simulation", "Analytics"])
 
 if nav == "Admin: Course Management":
-    st.header("🛠️ Super Admin Rights")
-    dept = st.selectbox("Filter", ["All", "IT", "IS"])
+    st.header("🛠️ Super Admin Rights: Course Allocation")
+    dept = st.selectbox("Filter View", ["All", "IT", "IS"])
     db_df = pd.DataFrame(st.session_state.courses_db)
     if dept != "All": db_df = db_df[db_df['Level'].str.contains(dept)]
+    
     edited = st.data_editor(db_df, num_rows="dynamic", use_container_width=True)
-    if st.button("💾 Save Changes"):
-        st.session_state.courses_db = edited.to_dict('records'); save_db(st.session_state.courses_db); st.success("Database Updated.")
+    if st.button("💾 Save & Synchronize Database"):
+        st.session_state.courses_db = edited.to_dict('records')
+        save_db(st.session_state.courses_db)
+        st.success("Database Updated. Changes are persistent.")
+
+    st.divider()
+    st.subheader("📥 Export Master Allocation Database")
+    st.download_button("Download Allocation Excel File", get_allocation_only_excel(db_df), "Course_Allocations.xlsx")
 
 elif nav == "Timetable Simulation":
     st.header("⚙️ Simulation Engine")
     if st.button("🚀 EXECUTE BALANCED GENERATOR"):
-        eng = BalancedTimetableEngine(st.session_state.courses_db); st.session_state.results = eng.run(); st.balloons()
+        eng = BalancedTimetableEngine(st.session_state.courses_db)
+        st.session_state.results = eng.run()
+        st.balloons()
     
     if 'results' in st.session_state:
         res = st.session_state.results
-        lv = st.selectbox("View Level", sorted(res['Level'].unique()))
+        lv = st.selectbox("View Level Grid", sorted(res['Level'].unique()))
         st.dataframe(res[res['Level'] == lv], use_container_width=True, hide_index=True)
-        st.download_button("📥 Download Master Excel (Merged Cells)", get_merged_excel(res), "Nile_Master_Timetable.xlsx")
+        
+        st.divider()
+        st.subheader("📥 Professional Master Timetable Export")
+        st.download_button("Download Full Timetable Excel (Merged Blocks)", get_merged_excel(res), "Nile_Master_Timetable.xlsx")
 
 elif nav == "Analytics":
     st.header("📈 Infrastructure Efficiency")
     if 'results' in st.session_state:
         res_ok = st.session_state.results[st.session_state.results['Day'] != "OVERFLOW"]
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=res_ok['Code'], y=res_ok['RoomCap'], name='Room Cap', marker_color=NAVY))
-        fig.add_trace(go.Bar(x=res_ok['Code'], y=res_ok['ActualSize'], name='Class Size', marker_color=GOLD))
+        fig.add_trace(go.Bar(x=res_ok['Code'], y=res_ok['RoomCap'], name='Room Capacity', marker_color=NAVY))
+        fig.add_trace(go.Bar(x=res_ok['Code'], y=res_ok['ActualSize'], name='Student Count', marker_color=GOLD))
+        fig.update_layout(barmode='group', title="Hall Occupancy Fit Analysis")
         st.plotly_chart(fig, use_container_width=True)
